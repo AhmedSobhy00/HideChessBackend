@@ -270,6 +270,39 @@ public class GameService : IGameService
                 game.BlackSetupBoard = _chess.CreateDefaultSetup(PieceColor.Black);
 
             game.Board       = _chess.CombineBoards(game.WhiteSetupBoard, game.BlackSetupBoard);
+
+            // If secret setups placed Kings adjacent to each other, relocate Black King to prevent immediate check lock
+            if (_chess.AreKingsAdjacent(game.Board))
+            {
+                var bkKvp = game.Board.FirstOrDefault(kvp => kvp.Value.Color == PieceColor.Black && kvp.Value.Type == PieceType.King);
+                if (bkKvp.Value != null)
+                {
+                    (int oldR, int oldC) = bkKvp.Key;
+                    for (int r = 7; r >= 4; r--)
+                    {
+                        bool found = false;
+                        for (int c = 0; c < 8; c++)
+                        {
+                            if (!game.Board.ContainsKey((r, c)))
+                            {
+                                game.Board.Remove((oldR, oldC));
+                                var kingPiece = bkKvp.Value;
+                                kingPiece.Row = r;
+                                kingPiece.Col = c;
+                                game.Board[(r, c)] = kingPiece;
+                                found = true;
+                                break;
+                            }
+                        }
+                        if (found && !_chess.AreKingsAdjacent(game.Board)) break;
+                    }
+                }
+            }
+
+            // Ensure neither King starts the game in check due to secret formation overlap
+            ResolveInitialCheck(game.Board, PieceColor.White);
+            ResolveInitialCheck(game.Board, PieceColor.Black);
+
             game.Phase       = GamePhase.Playing;
             game.CurrentTurn = PieceColor.White;
             game.HalfMoveClock  = 0;
@@ -587,7 +620,7 @@ public class GameService : IGameService
             var player = PlayerByConnection(game, connectionId);
             if (player is null)                     return (false, "You are not in this game");
             if (!game.DrawOfferedBy.HasValue || game.DrawOfferedBy == player.Color)
-                return (false, "No draw offer to decline");
+                return (true, null);
 
             var offererColor   = game.DrawOfferedBy.Value;
             game.DrawOfferedBy = null;
@@ -805,6 +838,69 @@ public class GameService : IGameService
 
         if (dto != null)
             await _hub.Clients.Clients(ConnectedPlayerIds(game)).SendAsync("GameFinished", dto);
+    }
+
+    private void ResolveInitialCheck(Dictionary<(int row, int col), ChessPieceInfo> board, PieceColor kingColor)
+    {
+        if (!_chess.IsInCheck(board, kingColor)) return;
+
+        var oppColor = kingColor == PieceColor.White ? PieceColor.Black : PieceColor.White;
+        int minRow = oppColor == PieceColor.White ? 0 : 4;
+        int maxRow = oppColor == PieceColor.White ? 3 : 7;
+
+        // Find king position
+        (int kr, int kc) kingPos = (-1, -1);
+        foreach (var ((r, c), p) in board)
+        {
+            if (p.Color == kingColor && p.Type == PieceType.King)
+            {
+                kingPos = (r, c);
+                break;
+            }
+        }
+        if (kingPos.kr < 0) return;
+
+        // Find checking opponent pieces
+        var checkingPieces = board
+            .Where(kvp => kvp.Value.Color == oppColor)
+            .Where(kvp => _chess.GetLegalMoves(board, kvp.Key.row, kvp.Key.col, null)
+                               .Any(m => m.row == kingPos.kr && m.col == kingPos.kc))
+            .ToList();
+
+        foreach (var kvp in checkingPieces)
+        {
+            (int oldR, int oldC) = kvp.Key;
+            var piece = kvp.Value;
+
+            bool relocated = false;
+            for (int r = minRow; r <= maxRow && !relocated; r++)
+            {
+                for (int c = 0; c < 8; c++)
+                {
+                    if (!board.ContainsKey((r, c)))
+                    {
+                        board.Remove((oldR, oldC));
+                        piece.Row = r;
+                        piece.Col = c;
+                        board[(r, c)] = piece;
+
+                        if (!_chess.IsInCheck(board, kingColor))
+                        {
+                            relocated = true;
+                            break;
+                        }
+                        else
+                        {
+                            // Revert and try next open square
+                            board.Remove((r, c));
+                            piece.Row = oldR;
+                            piece.Col = oldC;
+                            board[(oldR, oldC)] = piece;
+                        }
+                    }
+                }
+            }
+        }
     }
 
     private static PlayerInfo? PlayerByConnection(GameState game, string connectionId)

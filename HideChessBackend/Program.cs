@@ -14,7 +14,9 @@ builder.Services.Configure<GameSettings>(
 builder.Services.AddCors(options =>
 {
     options.AddPolicy("AngularClient", policy =>
-        policy.WithOrigins("http://localhost:4200")
+        policy.SetIsOriginAllowed(origin => 
+                  string.IsNullOrEmpty(origin) || 
+                  new Uri(origin).Host is "localhost" or "127.0.0.1")
               .AllowAnyHeader()
               .AllowAnyMethod()
               .AllowCredentials());
@@ -46,8 +48,11 @@ if (app.Environment.IsDevelopment())
     app.UseSwagger();
     app.UseSwaggerUI();
 }
+else
+{
+    app.UseHttpsRedirection();
+}
 
-app.UseHttpsRedirection();
 app.UseCors("AngularClient");        // Must come before UseAuthorization and MapHub
 app.UseAuthorization();
 app.MapControllers();
