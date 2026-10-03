@@ -481,7 +481,6 @@ public class GameService : IGameService
 
             // ── End-game detection ───────────────────────────────────────────
             var nextEp = result.NewEnPassantTarget;
-
             bool isCheck      = _chess.IsInCheck(game.Board, nextTurn);
             bool isCheckmate  = isCheck && _chess.IsCheckmate(game.Board, nextTurn, nextEp);
             bool isStalemate  = !isCheck && _chess.IsStalemate(game.Board, nextTurn, nextEp);
@@ -489,6 +488,17 @@ public class GameService : IGameService
             bool isFiftyMove  = game.HalfMoveClock >= 100;
             bool isThreefold  = game.PositionHistory[posKey] >= 3;
             bool isDraw       = isStalemate || isInsufficient || isFiftyMove || isThreefold;
+
+            // Compute SAN Notation
+            string pChar = piece.Type == PieceType.Knight ? "N" : piece.Type == PieceType.Pawn ? "" : piece.Type.ToString()[0..1];
+            string capChar = result.CapturedPiece != null ? "x" : "";
+            string pCapFrom = (piece.Type == PieceType.Pawn && result.CapturedPiece != null) ? from[0..1] : "";
+            string pPromo = result.IsPromotion ? "=" + (promoPiece ?? PieceType.Queen).ToString()[0..1].ToUpper() : "";
+            string sanNotation = pChar + pCapFrom + capChar + to + pPromo;
+            if (isCheckmate) sanNotation += "#";
+            else if (isCheck) sanNotation += "+";
+            
+            game.SanMoveHistory.Add(sanNotation);
 
             string? drawReason = isStalemate   ? "Stalemate"
                 : isInsufficient ? "Insufficient material"
@@ -524,6 +534,7 @@ public class GameService : IGameService
                 enPassantTarget = game.EnPassantTarget,
                 isEnPassant  = result.IsEnPassant,
                 moveNotation = notation,
+                sanMoveNotation = sanNotation,
                 moveNumber   = game.FullMoveNumber
             };
 
@@ -701,7 +712,27 @@ public class GameService : IGameService
             opp                   = Opponent(game, player.Color);
 
             // During setup we abandon immediately — there is no sense waiting
-            if (game.Phase is GamePhase.Setup or GamePhase.WaitingForPlayers)
+            if (game.Phase == GamePhase.WaitingForPlayers)
+            {
+                if (player.Color == PieceColor.Black)
+                {
+                    game.PlayerBlack = null;
+                    if (opp?.IsConnected == true)
+                    {
+                        _ = _hub.Clients.Client(opp.ConnectionId).SendAsync("OpponentDisconnected");
+                        _ = _hub.Clients.Client(opp.ConnectionId).SendAsync("GameStateRestored", new { phase = "WaitingForPlayers" });
+                    }
+                    return; // Black left, white can keep waiting
+                }
+                else
+                {
+                    // White left, destroy lobby
+                    game.Phase  = GamePhase.Finished;
+                    game.Result = GameResult.Abandoned;
+                    abandonImmediately = true;
+                }
+            }
+            else if (game.Phase == GamePhase.Setup)
             {
                 game.Phase  = GamePhase.Finished;
                 game.Result = GameResult.Abandoned;
@@ -718,7 +749,7 @@ public class GameService : IGameService
         {
             if (opp?.IsConnected == true)
                 await _hub.Clients.Client(opp.ConnectionId).SendAsync("GameFinished",
-                    new { result = "Abandoned", winner = opp.Color.ToString(), reason = "Opponent disconnected" });
+                    new { result = "Abandoned", winner = (string?)null, reason = "Opponent disconnected" });
             return;
         }
 
@@ -781,6 +812,15 @@ public class GameService : IGameService
             // Build the state snapshot the client needs to restore its UI
             switch (game.Phase)
             {
+                case GamePhase.WaitingForPlayers:
+                    stateDto = new
+                    {
+                        phase        = "WaitingForPlayers",
+                        gameMode     = game.GameMode,
+                        yourColor    = reconnected.Color.ToString(),
+                        opponentName = opp?.Name ?? ""
+                    };
+                    break;
                 case GamePhase.Setup:
                     var setupBoard = reconnected.Color == PieceColor.White
                         ? game.WhiteSetupBoard : game.BlackSetupBoard;
@@ -814,6 +854,7 @@ public class GameService : IGameService
                         currentTurn  = game.CurrentTurn.ToString(),
                         isCheck      = _chess.IsInCheck(game.Board, game.CurrentTurn),
                         moveHistory  = game.MoveHistory,
+                        sanMoveHistory = game.SanMoveHistory,
                         enPassantTarget = game.EnPassantTarget
                     };
                     break;

@@ -47,8 +47,8 @@ public class GameState
     public PieceColor? DrawOfferedBy { get; set; }
 
     // ── History ───────────────────────────────────────────────────────────────
-    /// <summary>Long algebraic notation list, e.g. ["e2e4", "e7e5", ...]</summary>
     public List<string> MoveHistory { get; set; } = new();
+    public List<string> SanMoveHistory { get; set; } = new();
 
     // ── Timestamps ───────────────────────────────────────────────────────────
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
