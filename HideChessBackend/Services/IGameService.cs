@@ -5,8 +5,9 @@ namespace HideChessBackend.Services;
 public interface IGameService
 {
     // ── Lobby ─────────────────────────────────────────────────────────────────
-    Task<GameState> CreateGameAsync(string connectionId, string playerName);
+    Task<GameState> CreateGameAsync(string connectionId, string playerName, string gameMode = "HiddenFormation");
     Task<(GameState? game, string? error)> JoinGameAsync(string gameId, string connectionId, string playerName);
+    Task<(bool success, string? error)> StartMatchAsync(string gameId, string connectionId);
 
     // ── Setup phase ───────────────────────────────────────────────────────────
     Task StartSetupPhaseAsync(string gameId);

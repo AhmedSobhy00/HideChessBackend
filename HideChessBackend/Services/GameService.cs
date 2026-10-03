@@ -39,12 +39,13 @@ public class GameService : IGameService
     //  Lobby
     // ════════════════════════════════════════════════════════════════════════
 
-    public Task<GameState> CreateGameAsync(string connectionId, string playerName)
+    public Task<GameState> CreateGameAsync(string connectionId, string playerName, string gameMode = "HiddenFormation")
     {
         var gameId = GenerateGameId();
         var game   = new GameState
         {
             GameId         = gameId,
+            GameMode       = string.IsNullOrWhiteSpace(gameMode) ? "HiddenFormation" : gameMode,
             PlayerWhite    = new PlayerInfo
             {
                 ConnectionId = connectionId,
@@ -66,6 +67,7 @@ public class GameService : IGameService
     public async Task<(GameState? game, string? error)> JoinGameAsync(
         string gameId, string connectionId, string playerName)
     {
+        gameId = gameId?.Trim().ToUpperInvariant() ?? string.Empty;
         if (!_games.TryGetValue(gameId, out var game))
             return (null, "Game not found");
         if (game.Phase != GamePhase.WaitingForPlayers)
@@ -92,6 +94,47 @@ public class GameService : IGameService
 
         _connectionToGame[connectionId] = gameId;
         return (game, null);
+    }
+
+    public async Task<(bool success, string? error)> StartMatchAsync(string gameId, string connectionId)
+    {
+        if (!_games.TryGetValue(gameId, out var game)) return (false, "Game not found");
+
+        await game.Lock.WaitAsync();
+        try
+        {
+            if (game.Phase != GamePhase.WaitingForPlayers) return (false, "Game has already started");
+            if (game.PlayerWhite == null || game.PlayerWhite.ConnectionId != connectionId)
+                return (false, "Only the room owner can start the match");
+            if (game.PlayerBlack == null)
+                return (false, "Waiting for opponent to join");
+        }
+        finally { game.Lock.Release(); }
+
+        var ids = ConnectedPlayerIds(game);
+        await _hub.Clients.Clients(ids).SendAsync("MatchStarting", new { seconds = 3 });
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await Task.Delay(TimeSpan.FromSeconds(3));
+                if (game.GameMode == "Classic")
+                {
+                    await StartRevealPhaseAsync(gameId);
+                }
+                else
+                {
+                    await StartSetupPhaseAsync(gameId);
+                }
+            }
+            catch (Exception ex)
+            {
+                _log.LogError(ex, "StartMatch countdown error for game {Id}", gameId);
+            }
+        });
+
+        return (true, null);
     }
 
     // ════════════════════════════════════════════════════════════════════════
@@ -261,7 +304,7 @@ public class GameService : IGameService
         await game.Lock.WaitAsync();
         try
         {
-            if (game.Phase != GamePhase.Setup) return; // idempotency guard
+            if (game.Phase != GamePhase.Setup && game.Phase != GamePhase.WaitingForPlayers) return; // idempotency guard
 
             // Validate both formations; fall back to default if somehow corrupt
             if (!_chess.ValidateSetupFormation(game.WhiteSetupBoard, PieceColor.White))
@@ -860,11 +903,10 @@ public class GameService : IGameService
         }
         if (kingPos.kr < 0) return;
 
-        // Find checking opponent pieces
+        // Find checking opponent pieces using attack query
         var checkingPieces = board
             .Where(kvp => kvp.Value.Color == oppColor)
-            .Where(kvp => _chess.GetLegalMoves(board, kvp.Key.row, kvp.Key.col, null)
-                               .Any(m => m.row == kingPos.kr && m.col == kingPos.kc))
+            .Where(kvp => _chess.IsSquareAttackedByPiece(board, kingPos.kr, kingPos.kc, kvp.Key.row, kvp.Key.col))
             .ToList();
 
         foreach (var kvp in checkingPieces)
@@ -901,6 +943,55 @@ public class GameService : IGameService
                 }
             }
         }
+
+        // Fallback: If king is STILL in check, relocate King itself to a safe square in its deployment zone
+        if (_chess.IsInCheck(board, kingColor))
+        {
+            var kingKvp = board.FirstOrDefault(kvp => kvp.Value.Color == kingColor && kvp.Value.Type == PieceType.King);
+            if (kingKvp.Value != null)
+            {
+                (int oldR, int oldC) = kingKvp.Key;
+                var kingPiece = kingKvp.Value;
+                int kMinRow = kingColor == PieceColor.White ? 0 : 4;
+                int kMaxRow = kingColor == PieceColor.White ? 3 : 7;
+
+                for (int r = kMinRow; r <= kMaxRow; r++)
+                {
+                    bool found = false;
+                    for (int c = 0; c < 8; c++)
+                    {
+                        if (!board.ContainsKey((r, c)))
+                        {
+                            board.Remove((oldR, oldC));
+                            kingPiece.Row = r;
+                            kingPiece.Col = c;
+                            board[(r, c)] = pieceRef(kingPiece, r, c);
+
+                            if (!_chess.IsInCheck(board, kingColor))
+                            {
+                                found = true;
+                                break;
+                            }
+                            else
+                            {
+                                board.Remove((r, c));
+                                kingPiece.Row = oldR;
+                                kingPiece.Col = oldC;
+                                board[(oldR, oldC)] = kingPiece;
+                            }
+                        }
+                    }
+                    if (found) break;
+                }
+            }
+        }
+    }
+
+    private static ChessPieceInfo pieceRef(ChessPieceInfo p, int r, int c)
+    {
+        p.Row = r;
+        p.Col = c;
+        return p;
     }
 
     private static PlayerInfo? PlayerByConnection(GameState game, string connectionId)

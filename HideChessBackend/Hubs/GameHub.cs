@@ -27,13 +27,14 @@ public class GameHub : Hub
     {
         try
         {
-            var g = await _game.CreateGameAsync(Context.ConnectionId, request.PlayerName);
+            var g = await _game.CreateGameAsync(Context.ConnectionId, request.PlayerName, request.GameMode);
             await Clients.Caller.SendAsync("GameCreated", new
             {
                 gameId    = g.GameId,
                 playerId  = g.PlayerWhite!.PlayerId,
                 yourColor = "White",
                 yourName  = g.PlayerWhite.Name,
+                gameMode  = g.GameMode,
                 shareUrl  = $"/game/{g.GameId}"
             });
         }
@@ -48,8 +49,9 @@ public class GameHub : Hub
     {
         try
         {
+            var cleanGameId = request.GameId?.Trim().ToUpperInvariant() ?? string.Empty;
             var (g, err) = await _game.JoinGameAsync(
-                request.GameId, Context.ConnectionId, request.PlayerName);
+                cleanGameId, Context.ConnectionId, request.PlayerName);
 
             if (err != null) { await Error(err); return; }
 
@@ -60,24 +62,29 @@ public class GameHub : Hub
                 playerId     = g.PlayerBlack!.PlayerId,
                 yourColor    = "Black",
                 yourName     = g.PlayerBlack.Name,
-                opponentName = g.PlayerWhite!.Name
+                opponentName = g.PlayerWhite!.Name,
+                gameMode     = g.GameMode
             });
 
             // Tell the waiting (white) player someone joined
             await Clients.Client(g.PlayerWhite.ConnectionId).SendAsync("PlayerJoined", new
             {
                 opponentName = g.PlayerBlack.Name,
-                color        = "Black"
+                color        = "Black",
+                gameMode     = g.GameMode
             });
-
-            // Start the 60-second hidden setup phase
-            await _game.StartSetupPhaseAsync(g.GameId);
         }
         catch (Exception ex)
         {
             _log.LogError(ex, "JoinGame failed");
             await Error("Failed to join game");
         }
+    }
+
+    public async Task StartMatch(string gameId)
+    {
+        var (ok, err) = await _game.StartMatchAsync(gameId, Context.ConnectionId);
+        if (!ok) await Error(err!);
     }
 
     // ── Setup phase ──────────────────────────────────────────────────────────

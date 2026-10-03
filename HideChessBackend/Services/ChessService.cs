@@ -247,7 +247,6 @@ public class ChessService : IChessService
 
     public bool IsInCheck(Dictionary<(int row, int col), ChessPieceInfo> board, PieceColor color)
     {
-        // Locate the king
         (int r, int c) king = (-1, -1);
         foreach (var ((r, c), p) in board)
         {
@@ -256,19 +255,38 @@ public class ChessService : IChessService
                 king = (r, c); break;
             }
         }
-        if (king.r < 0) return false; // no king on board (shouldn't happen)
+        if (king.r < 0) return false;
+        return IsSquareAttacked(board, king.r, king.c, Opposite(color));
+    }
 
-        var opp = Opposite(color);
-        // Check whether any opponent piece attacks the king square.
-        // Use pseudo-legal moves (not legal) to avoid infinite recursion.
+    public bool IsSquareAttacked(
+        Dictionary<(int row, int col), ChessPieceInfo> board,
+        int targetRow, int targetCol, PieceColor attackerColor)
+    {
         foreach (var ((r, c), p) in board)
         {
-            if (p.Color != opp) continue;
-            var attacks = GetPseudoLegalMoves(board, r, c, p, null);
-            if (attacks.Any(m => m.Item1 == king.r && m.Item2 == king.c))
+            if (p.Color != attackerColor) continue;
+            if (IsSquareAttackedByPiece(board, targetRow, targetCol, r, c))
                 return true;
         }
         return false;
+    }
+
+    public bool IsSquareAttackedByPiece(
+        Dictionary<(int row, int col), ChessPieceInfo> board,
+        int targetRow, int targetCol, int pieceRow, int pieceCol)
+    {
+        if (!board.TryGetValue((pieceRow, pieceCol), out var p)) return false;
+
+        if (p.Type == PieceType.Pawn)
+        {
+            int dir = p.Color == PieceColor.White ? 1 : -1;
+            int nextR = pieceRow + dir;
+            return nextR == targetRow && (pieceCol - 1 == targetCol || pieceCol + 1 == targetCol);
+        }
+
+        var pseudo = GetPseudoLegalMoves(board, pieceRow, pieceCol, p, null);
+        return pseudo.Any(m => m.Item1 == targetRow && m.Item2 == targetCol);
     }
 
     public bool IsCheckmate(

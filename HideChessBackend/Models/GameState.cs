@@ -10,6 +10,7 @@ public class GameState
 {
     // ── Identity ─────────────────────────────────────────────────────────────
     public string GameId        { get; set; } = string.Empty;
+    public string GameMode      { get; set; } = "HiddenFormation";
     public PlayerInfo? PlayerWhite { get; set; }
     public PlayerInfo? PlayerBlack { get; set; }
 

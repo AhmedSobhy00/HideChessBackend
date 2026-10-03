@@ -28,6 +28,8 @@ public interface IChessService
 
     // ── Game-state queries ────────────────────────────────────────────────────
     bool IsInCheck(Dictionary<(int row, int col), ChessPieceInfo> board, PieceColor color);
+    bool IsSquareAttacked(Dictionary<(int row, int col), ChessPieceInfo> board, int targetRow, int targetCol, PieceColor attackerColor);
+    bool IsSquareAttackedByPiece(Dictionary<(int row, int col), ChessPieceInfo> board, int targetRow, int targetCol, int pieceRow, int pieceCol);
     bool IsCheckmate(Dictionary<(int row, int col), ChessPieceInfo> board, PieceColor color, (int row, int col)? enPassantTarget);
     bool IsStalemate(Dictionary<(int row, int col), ChessPieceInfo> board, PieceColor color, (int row, int col)? enPassantTarget);
     bool HasInsufficientMaterial(Dictionary<(int row, int col), ChessPieceInfo> board);
