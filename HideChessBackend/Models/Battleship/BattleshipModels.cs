@@ -2,11 +2,11 @@ namespace HideChessBackend.Models.Battleship;
 
 public enum ShipType
 {
-    Carrier = 5,    // 5 cells
-    Battleship = 4, // 4 cells
-    Cruiser = 3,    // 3 cells
-    Submarine = 3,  // 3 cells
-    Destroyer = 2   // 2 cells
+    Carrier,
+    Battleship,
+    Cruiser,
+    Submarine,
+    Destroyer
 }
 
 public enum CellState
@@ -35,13 +35,94 @@ public class ShipInstance
 {
     public string Id { get; set; } = Guid.NewGuid().ToString("N");
     public ShipType Type { get; set; }
-    public int Length => (int)Type;
+    public int Length => OccupiedCells.Count > 0 ? OccupiedCells.Count : (int)Type;
     public int StartRow { get; set; }
     public int StartCol { get; set; }
     public bool IsVertical { get; set; }
     public List<Coordinate> OccupiedCells { get; set; } = new();
     public int Hits { get; set; }
     public bool IsSunk => Hits >= Length;
+}
+
+public static class ShipShapeHelper
+{
+    public static List<Coordinate> GetRelativeCells(ShipType type, bool isVertical)
+    {
+        var cells = new List<Coordinate>();
+        switch (type)
+        {
+            case ShipType.Carrier: // 5 cells (3 hull + 2 deck extension)
+                if (!isVertical)
+                {
+                    cells.Add(new Coordinate(0, 0));
+                    cells.Add(new Coordinate(0, 1));
+                    cells.Add(new Coordinate(0, 2));
+                    cells.Add(new Coordinate(1, 0));
+                    cells.Add(new Coordinate(1, 1));
+                }
+                else
+                {
+                    cells.Add(new Coordinate(0, 0));
+                    cells.Add(new Coordinate(1, 0));
+                    cells.Add(new Coordinate(2, 0));
+                    cells.Add(new Coordinate(0, 1));
+                    cells.Add(new Coordinate(1, 1));
+                }
+                break;
+
+            case ShipType.Cruiser: // 4 cells (3 hull + 1 turret protrusion)
+                if (!isVertical)
+                {
+                    cells.Add(new Coordinate(0, 0));
+                    cells.Add(new Coordinate(0, 1));
+                    cells.Add(new Coordinate(0, 2));
+                    cells.Add(new Coordinate(1, 1));
+                }
+                else
+                {
+                    cells.Add(new Coordinate(0, 0));
+                    cells.Add(new Coordinate(1, 0));
+                    cells.Add(new Coordinate(2, 0));
+                    cells.Add(new Coordinate(1, 1));
+                }
+                break;
+
+            case ShipType.Battleship: // 4 cells straight
+                if (!isVertical)
+                {
+                    for (int i = 0; i < 4; i++) cells.Add(new Coordinate(0, i));
+                }
+                else
+                {
+                    for (int i = 0; i < 4; i++) cells.Add(new Coordinate(i, 0));
+                }
+                break;
+
+            case ShipType.Submarine: // 3 cells straight
+                if (!isVertical)
+                {
+                    for (int i = 0; i < 3; i++) cells.Add(new Coordinate(0, i));
+                }
+                else
+                {
+                    for (int i = 0; i < 3; i++) cells.Add(new Coordinate(i, 0));
+                }
+                break;
+
+            case ShipType.Destroyer: // 2 cells straight
+            default:
+                if (!isVertical)
+                {
+                    for (int i = 0; i < 2; i++) cells.Add(new Coordinate(0, i));
+                }
+                else
+                {
+                    for (int i = 0; i < 2; i++) cells.Add(new Coordinate(i, 0));
+                }
+                break;
+        }
+        return cells;
+    }
 }
 
 public class BattleshipPlayer

@@ -269,13 +269,16 @@ public class BattleshipService : IBattleshipService
         }
 
         // Handle Bot Turn if next turn belongs to bot
-        if (defender.IsBot && nextTurnId == defender.PlayerId && game.Phase == BattleshipPhase.Playing)
+        var nextTurnPlayer = game.Host.PlayerId == nextTurnId ? game.Host : game.Guest;
+        if (nextTurnPlayer != null && nextTurnPlayer.IsBot && game.Phase == BattleshipPhase.Playing)
         {
+            var botPlayer = nextTurnPlayer;
+            var opponent = botPlayer.PlayerId == game.Host.PlayerId ? game.Guest! : game.Host;
             _ = Task.Run(async () =>
             {
                 var delay = _rand.Next(900, 2200);
                 await Task.Delay(delay);
-                await TriggerBotMoveAsync(game, defender, shooter);
+                await TriggerBotMoveAsync(game, botPlayer, opponent);
             });
         }
 
@@ -387,13 +390,13 @@ public class BattleshipService : IBattleshipService
 
         foreach (var dto in shipDtos)
         {
-            int len = (int)dto.Type;
+            var relative = ShipShapeHelper.GetRelativeCells(dto.Type, dto.IsVertical);
             var occupied = new List<Coordinate>();
 
-            for (int i = 0; i < len; i++)
+            foreach (var rel in relative)
             {
-                int r = dto.IsVertical ? dto.StartRow + i : dto.StartRow;
-                int c = dto.IsVertical ? dto.StartCol : dto.StartCol + i;
+                int r = dto.StartRow + rel.Row;
+                int c = dto.StartCol + rel.Col;
 
                 if (r < 0 || r > 9 || c < 0 || c > 9)
                 {
@@ -432,26 +435,28 @@ public class BattleshipService : IBattleshipService
 
         foreach (var st in requiredTypes)
         {
-            int len = (int)st;
             bool placed = false;
-            int maxAttempts = 200;
+            int maxAttempts = 500;
 
             while (!placed && maxAttempts-- > 0)
             {
                 bool isVert = _rand.Next(2) == 0;
-                int maxRow = isVert ? 10 - len : 9;
-                int maxCol = isVert ? 9 : 10 - len;
+                var relative = ShipShapeHelper.GetRelativeCells(st, isVert);
 
-                int startR = _rand.Next(0, maxRow + 1);
-                int startC = _rand.Next(0, maxCol + 1);
+                int maxR = 9 - relative.Max(x => x.Row);
+                int maxC = 9 - relative.Max(x => x.Col);
+                if (maxR < 0 || maxC < 0) continue;
+
+                int startR = _rand.Next(0, maxR + 1);
+                int startC = _rand.Next(0, maxC + 1);
 
                 bool valid = true;
                 var cells = new List<Coordinate>();
 
-                for (int i = 0; i < len; i++)
+                foreach (var rel in relative)
                 {
-                    int r = isVert ? startR + i : startR;
-                    int c = isVert ? startC : startC + i;
+                    int r = startR + rel.Row;
+                    int c = startC + rel.Col;
 
                     if (grid[r, c] == CellState.Ship)
                     {
