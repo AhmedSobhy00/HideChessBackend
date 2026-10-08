@@ -276,7 +276,7 @@ public class BattleshipService : IBattleshipService
             var opponent = botPlayer.PlayerId == game.Host.PlayerId ? game.Guest! : game.Host;
             _ = Task.Run(async () =>
             {
-                var delay = _rand.Next(900, 2200);
+                var delay = _rand.Next(2800, 4200);
                 await Task.Delay(delay);
                 await TriggerBotMoveAsync(game, botPlayer, opponent);
             });
