@@ -35,6 +35,7 @@ builder.Services.AddSwaggerGen();
 // ── Domain services (Singleton — in-memory state must persist across requests)
 builder.Services.AddSingleton<IChessService, ChessService>();
 builder.Services.AddSingleton<IGameService, GameService>();
+builder.Services.AddSingleton<IBattleshipService, BattleshipService>();
 
 // ─────────────────────────────────────────────────────────────────────────────
 var app = builder.Build();
@@ -46,6 +47,7 @@ app.UseCors("AngularClient");        // Must come before UseAuthorization and Ma
 app.UseWebSockets();
 app.UseAuthorization();
 app.MapControllers();
-app.MapHub<GameHub>("/gamehub");     // SignalR endpoint
+app.MapHub<GameHub>("/gamehub");           // Chess SignalR endpoint
+app.MapHub<BattleshipHub>("/battleshiphub"); // Battleship SignalR endpoint
 
 app.Run();
