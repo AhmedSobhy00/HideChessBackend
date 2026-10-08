@@ -235,7 +235,7 @@ public class BattleshipService : IBattleshipService
         }
 
         bool allSunk = defender.Ships.All(s => s.IsSunk);
-        string nextTurnId = isHit && !allSunk ? shooter.PlayerId : defender.PlayerId;
+        string nextTurnId = allSunk ? shooter.PlayerId : (isHit ? shooter.PlayerId : defender.PlayerId);
         game.CurrentTurnPlayerId = nextTurnId;
 
         // Broadcast Shot Fired event
