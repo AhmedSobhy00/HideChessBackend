@@ -226,6 +226,34 @@ public class BattleshipService : IBattleshipService
                     }
                 }
             }
+
+            // Populate Bot AI Target Queue on Hit
+            if (shooter.IsBot)
+            {
+                if (hitShip != null && hitShip.IsSunk)
+                {
+                    // Filter out queue coordinates that were occupied by the sunk ship
+                    shooter.BotTargetQueue.RemoveAll(q => shooter.TargetRadar[q.Row, q.Col] != CellState.Empty);
+                }
+                else
+                {
+                    // Enqueue adjacent orthogonal cells (Up, Down, Left, Right)
+                    int[] dr = { -1, 1, 0, 0 };
+                    int[] dc = { 0, 0, -1, 1 };
+                    for (int i = 0; i < 4; i++)
+                    {
+                        int nr = row + dr[i];
+                        int nc = col + dc[i];
+                        if (nr >= 0 && nr < 10 && nc >= 0 && nc < 10)
+                        {
+                            if (shooter.TargetRadar[nr, nc] == CellState.Empty && !shooter.BotTargetQueue.Any(q => q.Row == nr && q.Col == nc))
+                            {
+                                shooter.BotTargetQueue.Add(new Coordinate(nr, nc));
+                            }
+                        }
+                    }
+                }
+            }
         }
         else
         {
@@ -297,13 +325,44 @@ public class BattleshipService : IBattleshipService
     {
         var diff = bot.BotDifficulty ?? "Medium";
 
-        if (diff == "Easy")
+        // EASY DIFFICULTY: Pure 100% Random Shots
+        if (diff.Equals("Easy", StringComparison.OrdinalIgnoreCase))
         {
             return PickRandomUnshotCell(bot);
         }
 
-        // Medium & Hard: Hunt and Target Strategy
-        if (bot.BotTargetQueue.Count > 0)
+        // HARD DIFFICULTY: Lethal Tactical Radar Tracking
+        if (diff.Equals("Hard", StringComparison.OrdinalIgnoreCase))
+        {
+            // First check adjacent target queue from previous hits
+            while (bot.BotTargetQueue.Count > 0)
+            {
+                var next = bot.BotTargetQueue[0];
+                bot.BotTargetQueue.RemoveAt(0);
+                if (bot.TargetRadar[next.Row, next.Col] == CellState.Empty)
+                    return next;
+            }
+
+            // 70% chance to target an unshot cell of an active human ship
+            if (_rand.Next(100) < 70 && human.Ships != null)
+            {
+                var aliveHumanCells = human.Ships
+                    .Where(s => !s.IsSunk)
+                    .SelectMany(s => s.OccupiedCells)
+                    .Where(c => bot.TargetRadar[c.Row, c.Col] == CellState.Empty)
+                    .ToList();
+
+                if (aliveHumanCells.Count > 0)
+                {
+                    return aliveHumanCells[_rand.Next(aliveHumanCells.Count)];
+                }
+            }
+
+            return PickParityUnshotCell(bot);
+        }
+
+        // MEDIUM DIFFICULTY (Default): Systematic Hunt & Target Strategy
+        while (bot.BotTargetQueue.Count > 0)
         {
             var next = bot.BotTargetQueue[0];
             bot.BotTargetQueue.RemoveAt(0);
@@ -312,9 +371,37 @@ public class BattleshipService : IBattleshipService
                 return next;
         }
 
-        // If no queue, pick random cell
-        var coord = PickRandomUnshotCell(bot);
-        return coord;
+        // Parity hunt (checkerboard search)
+        return PickParityUnshotCell(bot);
+    }
+
+    private Coordinate PickParityUnshotCell(BattleshipPlayer bot)
+    {
+        var parityCandidates = new List<Coordinate>();
+        var allCandidates = new List<Coordinate>();
+
+        for (int r = 0; r < 10; r++)
+        {
+            for (int c = 0; c < 10; c++)
+            {
+                if (bot.TargetRadar[r, c] == CellState.Empty)
+                {
+                    allCandidates.Add(new Coordinate(r, c));
+                    if ((r + c) % 2 == 0)
+                    {
+                        parityCandidates.Add(new Coordinate(r, c));
+                    }
+                }
+            }
+        }
+
+        if (parityCandidates.Count > 0)
+            return parityCandidates[_rand.Next(parityCandidates.Count)];
+
+        if (allCandidates.Count > 0)
+            return allCandidates[_rand.Next(allCandidates.Count)];
+
+        return new Coordinate(0, 0);
     }
 
     private Coordinate PickRandomUnshotCell(BattleshipPlayer bot)
