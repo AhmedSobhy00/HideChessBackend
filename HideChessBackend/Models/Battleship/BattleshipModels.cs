@@ -51,24 +51,24 @@ public static class ShipShapeHelper
         var cells = new List<Coordinate>();
         switch (type)
         {
-            case ShipType.Carrier: // 6 cells (3 hull + 3 deck extension)
+            case ShipType.Carrier: // 6 cells (staggered 2x3 shape: row 0 cols 0..2, row 1 cols 1..3)
                 if (!isVertical)
                 {
                     cells.Add(new Coordinate(0, 0));
                     cells.Add(new Coordinate(0, 1));
                     cells.Add(new Coordinate(0, 2));
-                    cells.Add(new Coordinate(1, 0));
                     cells.Add(new Coordinate(1, 1));
                     cells.Add(new Coordinate(1, 2));
+                    cells.Add(new Coordinate(1, 3));
                 }
                 else
                 {
                     cells.Add(new Coordinate(0, 0));
                     cells.Add(new Coordinate(1, 0));
                     cells.Add(new Coordinate(2, 0));
-                    cells.Add(new Coordinate(0, 1));
                     cells.Add(new Coordinate(1, 1));
                     cells.Add(new Coordinate(2, 1));
+                    cells.Add(new Coordinate(3, 1));
                 }
                 break;
 
