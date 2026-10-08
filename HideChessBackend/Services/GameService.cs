@@ -161,6 +161,7 @@ public class GameService : IGameService
             BotDifficulty = difficulty
         };
 
+        bool isClassic = gameMode == "Classic";
         var game = new GameState
         {
             GameId          = gameId,
@@ -168,8 +169,10 @@ public class GameService : IGameService
             OwnerPlayerId   = humanPlayer.PlayerId,
             PlayerWhite     = humanColor == PieceColor.White ? humanPlayer : botPlayer,
             PlayerBlack     = humanColor == PieceColor.Black ? humanPlayer : botPlayer,
-            WhiteSetupBoard = humanColor == PieceColor.White ? _chess.CreateDefaultSetup(PieceColor.White) : CreateRandomBotSetup(PieceColor.White),
-            BlackSetupBoard = humanColor == PieceColor.Black ? _chess.CreateDefaultSetup(PieceColor.Black) : CreateRandomBotSetup(PieceColor.Black),
+            WhiteSetupBoard = humanColor == PieceColor.White ? _chess.CreateDefaultSetup(PieceColor.White)
+                : (isClassic ? _chess.CreateDefaultSetup(PieceColor.White) : CreateRandomBotSetup(PieceColor.White)),
+            BlackSetupBoard = humanColor == PieceColor.Black ? _chess.CreateDefaultSetup(PieceColor.Black)
+                : (isClassic ? _chess.CreateDefaultSetup(PieceColor.Black) : CreateRandomBotSetup(PieceColor.Black)),
             CreatedAt       = DateTime.UtcNow
         };
 
@@ -491,9 +494,10 @@ public class GameService : IGameService
             currentTurn = "White"
         });
 
-        if (game.Phase == GamePhase.Playing && game.CurrentTurn == PieceColor.Black && game.PlayerBlack?.IsBot == true)
+        var firstPlayer = game.CurrentTurn == PieceColor.White ? game.PlayerWhite : game.PlayerBlack;
+        if (game.Phase == GamePhase.Playing && firstPlayer?.IsBot == true)
         {
-            _ = Task.Run(() => TriggerBotMoveAsync(gameId, game.PlayerBlack.BotDifficulty));
+            _ = Task.Run(() => TriggerBotMoveAsync(gameId, firstPlayer.BotDifficulty));
         }
     }
 
@@ -696,9 +700,10 @@ public class GameService : IGameService
         if (moveMadeDto     != null) await _hub.Clients.Clients(ids).SendAsync("MoveMade",     moveMadeDto);
         if (gameFinishedDto != null) await _hub.Clients.Clients(ids).SendAsync("GameFinished", gameFinishedDto);
 
-        if (gameFinishedDto == null && game.Phase == GamePhase.Playing && game.CurrentTurn == PieceColor.Black && game.PlayerBlack?.IsBot == true)
+        var nextPlayer = game.CurrentTurn == PieceColor.White ? game.PlayerWhite : game.PlayerBlack;
+        if (gameFinishedDto == null && game.Phase == GamePhase.Playing && nextPlayer?.IsBot == true)
         {
-            _ = Task.Run(() => TriggerBotMoveAsync(gameId, game.PlayerBlack.BotDifficulty));
+            _ = Task.Run(() => TriggerBotMoveAsync(gameId, nextPlayer.BotDifficulty));
         }
 
         return (true, null);
@@ -1268,7 +1273,8 @@ public class GameService : IGameService
 
             if (!_games.TryGetValue(gameId, out var game)) return;
             if (game.Phase != GamePhase.Playing) return;
-            if (game.CurrentTurn != PieceColor.Black || game.PlayerBlack?.IsBot != true) return;
+            var currentTurnPlayer = game.CurrentTurn == PieceColor.White ? game.PlayerWhite : game.PlayerBlack;
+            if (currentTurnPlayer == null || !currentTurnPlayer.IsBot) return;
 
             var (fromAlg, toAlg, promoStr) = SelectBotMove(game, difficulty);
             if (string.IsNullOrEmpty(fromAlg) || string.IsNullOrEmpty(toAlg)) return;
