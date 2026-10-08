@@ -1269,7 +1269,13 @@ public class GameService : IGameService
     {
         try
         {
-            await Task.Delay(Random.Shared.Next(600, 1100));
+            int thinkMs = difficulty switch
+            {
+                "Easy" => Random.Shared.Next(800, 2200),
+                "Hard" => Random.Shared.Next(1500, 3000),
+                _      => Random.Shared.Next(1000, 2800) // Medium
+            };
+            await Task.Delay(thinkMs);
 
             if (!_games.TryGetValue(gameId, out var game)) return;
             if (game.Phase != GamePhase.Playing) return;
