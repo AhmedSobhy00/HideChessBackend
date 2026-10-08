@@ -33,33 +33,147 @@ public class GameService : IGameService
         _hub   = hub;
         _cfg   = cfg.Value;
         _log   = log;
+
+        StartPeriodicCleanupTask();
+    }
+
+    private void StartPeriodicCleanupTask()
+    {
+        _ = Task.Run(async () =>
+        {
+            using var timer = new PeriodicTimer(TimeSpan.FromMinutes(5));
+            while (await timer.WaitForNextTickAsync())
+            {
+                try { CleanupStaleGames(); }
+                catch (Exception ex) { _log.LogError(ex, "Error during periodic game cleanup"); }
+            }
+        });
+    }
+
+    private void CleanupStaleGames()
+    {
+        var now = DateTime.UtcNow;
+        var staleIds = _games.Where(kvp =>
+        {
+            var g = kvp.Value;
+            var isOld = (now - g.CreatedAt) > TimeSpan.FromHours(2);
+            var isFinishedOld = g.Phase == GamePhase.Finished && (now - g.CreatedAt) > TimeSpan.FromMinutes(15);
+            return isOld || isFinishedOld;
+        }).Select(kvp => kvp.Key).ToList();
+
+        foreach (var id in staleIds)
+        {
+            if (_games.TryRemove(id, out var g))
+            {
+                try
+                {
+                    g.SetupTimerCts?.Cancel();
+                    g.SetupTimerCts?.Dispose();
+                    g.DisconnectionTimerCts?.Cancel();
+                    g.DisconnectionTimerCts?.Dispose();
+                    g.Lock?.Dispose();
+
+                    if (g.PlayerWhite?.ConnectionId != null) _connectionToGame.TryRemove(g.PlayerWhite.ConnectionId, out _);
+                    if (g.PlayerBlack?.ConnectionId != null) _connectionToGame.TryRemove(g.PlayerBlack.ConnectionId, out _);
+                }
+                catch { /* Ignore dispose races */ }
+            }
+        }
     }
 
     // ════════════════════════════════════════════════════════════════════════
     //  Lobby
     // ════════════════════════════════════════════════════════════════════════
 
-    public Task<GameState> CreateGameAsync(string connectionId, string playerName, string gameMode = "HiddenFormation")
+    public Task<GameState> CreateGameAsync(string connectionId, string playerName, string gameMode = "HiddenFormation", string preferredColor = "Random")
     {
         var gameId = GenerateGameId();
-        var game   = new GameState
+        PieceColor creatorColor = preferredColor?.ToLowerInvariant() switch
         {
-            GameId         = gameId,
-            GameMode       = string.IsNullOrWhiteSpace(gameMode) ? "HiddenFormation" : gameMode,
-            PlayerWhite    = new PlayerInfo
-            {
-                ConnectionId = connectionId,
-                PlayerId     = Guid.NewGuid().ToString(),
-                Name         = Sanitize(playerName),
-                Color        = PieceColor.White,
-                IsConnected  = true
-            },
+            "black" => PieceColor.Black,
+            "white" => PieceColor.White,
+            _       => Random.Shared.Next(2) == 0 ? PieceColor.White : PieceColor.Black
+        };
+
+        var creatorPlayer = new PlayerInfo
+        {
+            ConnectionId = connectionId,
+            PlayerId     = Guid.NewGuid().ToString(),
+            Name         = Sanitize(playerName),
+            Color        = creatorColor,
+            IsConnected  = true
+        };
+
+        var game = new GameState
+        {
+            GameId          = gameId,
+            GameMode        = string.IsNullOrWhiteSpace(gameMode) ? "HiddenFormation" : gameMode,
+            OwnerPlayerId   = creatorPlayer.PlayerId,
+            PlayerWhite     = creatorColor == PieceColor.White ? creatorPlayer : null,
+            PlayerBlack     = creatorColor == PieceColor.Black ? creatorPlayer : null,
             WhiteSetupBoard = _chess.CreateDefaultSetup(PieceColor.White),
             BlackSetupBoard = _chess.CreateDefaultSetup(PieceColor.Black),
             CreatedAt       = DateTime.UtcNow
         };
 
-        _games[gameId]              = game;
+        _games[gameId]                  = game;
+        _connectionToGame[connectionId] = gameId;
+        return Task.FromResult(game);
+    }
+
+    public Task<GameState> CreateBotGameAsync(
+        string connectionId, string playerName, string gameMode = "HiddenFormation", string difficulty = "Medium", string preferredColor = "Random")
+    {
+        var gameId = GenerateGameId();
+        var botName = difficulty switch
+        {
+            "Easy" => "Bot (Easy 🌱)",
+            "Hard" => "Bot (Master 🧠)",
+            _      => "Bot (Medium ⚔️)"
+        };
+
+        PieceColor humanColor = preferredColor?.ToLowerInvariant() switch
+        {
+            "black" => PieceColor.Black,
+            "white" => PieceColor.White,
+            _       => Random.Shared.Next(2) == 0 ? PieceColor.White : PieceColor.Black
+        };
+        PieceColor botColor = Opposite(humanColor);
+
+        var humanPlayer = new PlayerInfo
+        {
+            ConnectionId = connectionId,
+            PlayerId     = Guid.NewGuid().ToString(),
+            Name         = Sanitize(playerName),
+            Color        = humanColor,
+            IsConnected  = true
+        };
+
+        var botPlayer = new PlayerInfo
+        {
+            ConnectionId  = "BOT_CONNECTION_ID",
+            PlayerId      = Guid.NewGuid().ToString(),
+            Name          = botName,
+            Color         = botColor,
+            IsConnected   = true,
+            IsReady       = true,
+            IsBot         = true,
+            BotDifficulty = difficulty
+        };
+
+        var game = new GameState
+        {
+            GameId          = gameId,
+            GameMode        = string.IsNullOrWhiteSpace(gameMode) ? "HiddenFormation" : gameMode,
+            OwnerPlayerId   = humanPlayer.PlayerId,
+            PlayerWhite     = humanColor == PieceColor.White ? humanPlayer : botPlayer,
+            PlayerBlack     = humanColor == PieceColor.Black ? humanPlayer : botPlayer,
+            WhiteSetupBoard = humanColor == PieceColor.White ? _chess.CreateDefaultSetup(PieceColor.White) : CreateRandomBotSetup(PieceColor.White),
+            BlackSetupBoard = humanColor == PieceColor.Black ? _chess.CreateDefaultSetup(PieceColor.Black) : CreateRandomBotSetup(PieceColor.Black),
+            CreatedAt       = DateTime.UtcNow
+        };
+
+        _games[gameId]                  = game;
         _connectionToGame[connectionId] = gameId;
         return Task.FromResult(game);
     }
@@ -72,23 +186,27 @@ public class GameService : IGameService
             return (null, "Game not found");
         if (game.Phase != GamePhase.WaitingForPlayers)
             return (null, "Game has already started");
-        if (game.PlayerBlack != null)
+        if (game.PlayerWhite != null && game.PlayerBlack != null)
             return (null, "Game is full");
 
         await game.Lock.WaitAsync();
         try
         {
-            if (game.Phase != GamePhase.WaitingForPlayers || game.PlayerBlack != null)
+            if (game.Phase != GamePhase.WaitingForPlayers || (game.PlayerWhite != null && game.PlayerBlack != null))
                 return (null, "Game is no longer joinable");
 
-            game.PlayerBlack = new PlayerInfo
+            PieceColor joinerColor = game.PlayerWhite == null ? PieceColor.White : PieceColor.Black;
+            var joinerPlayer = new PlayerInfo
             {
                 ConnectionId = connectionId,
                 PlayerId     = Guid.NewGuid().ToString(),
                 Name         = Sanitize(playerName),
-                Color        = PieceColor.Black,
+                Color        = joinerColor,
                 IsConnected  = true
             };
+
+            if (joinerColor == PieceColor.White) game.PlayerWhite = joinerPlayer;
+            else                                 game.PlayerBlack = joinerPlayer;
         }
         finally { game.Lock.Release(); }
 
@@ -104,9 +222,10 @@ public class GameService : IGameService
         try
         {
             if (game.Phase != GamePhase.WaitingForPlayers) return (false, "Game has already started");
-            if (game.PlayerWhite == null || game.PlayerWhite.ConnectionId != connectionId)
+            var host = game.PlayerWhite?.ConnectionId == connectionId ? game.PlayerWhite : (game.PlayerBlack?.ConnectionId == connectionId ? game.PlayerBlack : null);
+            if (host == null)
                 return (false, "Only the room owner can start the match");
-            if (game.PlayerBlack == null)
+            if (game.PlayerWhite == null || game.PlayerBlack == null)
                 return (false, "Waiting for opponent to join");
         }
         finally { game.Lock.Release(); }
@@ -371,6 +490,11 @@ public class GameService : IGameService
             pieces      = allPieces,
             currentTurn = "White"
         });
+
+        if (game.Phase == GamePhase.Playing && game.CurrentTurn == PieceColor.Black && game.PlayerBlack?.IsBot == true)
+        {
+            _ = Task.Run(() => TriggerBotMoveAsync(gameId, game.PlayerBlack.BotDifficulty));
+        }
     }
 
     // ════════════════════════════════════════════════════════════════════════
@@ -572,6 +696,11 @@ public class GameService : IGameService
         if (moveMadeDto     != null) await _hub.Clients.Clients(ids).SendAsync("MoveMade",     moveMadeDto);
         if (gameFinishedDto != null) await _hub.Clients.Clients(ids).SendAsync("GameFinished", gameFinishedDto);
 
+        if (gameFinishedDto == null && game.Phase == GamePhase.Playing && game.CurrentTurn == PieceColor.Black && game.PlayerBlack?.IsBot == true)
+        {
+            _ = Task.Run(() => TriggerBotMoveAsync(gameId, game.PlayerBlack.BotDifficulty));
+        }
+
         return (true, null);
     }
 
@@ -707,40 +836,37 @@ public class GameService : IGameService
             var player = PlayerByConnection(game, connectionId);
             if (player is null) return;
 
-            player.IsConnected    = false;
-            disconnectedPlayer    = player;
-            opp                   = Opponent(game, player.Color);
+            player.IsConnected = false;
+            disconnectedPlayer = player;
+            opp                = Opponent(game, player.Color);
+            bool isOwner       = player.PlayerId == game.OwnerPlayerId;
 
-            // During setup we abandon immediately — there is no sense waiting
             if (game.Phase == GamePhase.WaitingForPlayers)
             {
-                if (player.Color == PieceColor.Black)
+                if (isOwner)
                 {
-                    game.PlayerBlack = null;
+                    // Owner left waiting room -> destroy lobby
+                    game.Phase  = GamePhase.Finished;
+                    game.Result = GameResult.Abandoned;
+                    abandonImmediately = true;
+                }
+                else
+                {
+                    // Challenger left waiting room -> reset challenger slot
+                    if (player.Color == PieceColor.White) game.PlayerWhite = null;
+                    else                                 game.PlayerBlack = null;
+
                     if (opp?.IsConnected == true)
                     {
                         _ = _hub.Clients.Client(opp.ConnectionId).SendAsync("OpponentDisconnected");
                         _ = _hub.Clients.Client(opp.ConnectionId).SendAsync("GameStateRestored", new { phase = "WaitingForPlayers" });
                     }
-                    return; // Black left, white can keep waiting
-                }
-                else
-                {
-                    // White left, destroy lobby
-                    game.Phase  = GamePhase.Finished;
-                    game.Result = GameResult.Abandoned;
-                    abandonImmediately = true;
+                    return;
                 }
             }
-            else if (game.Phase == GamePhase.Setup)
+            else if (game.Phase == GamePhase.Setup || game.Phase == GamePhase.Playing)
             {
-                game.Phase  = GamePhase.Finished;
-                game.Result = GameResult.Abandoned;
-                abandonImmediately = true;
-            }
-            else if (game.Phase == GamePhase.Playing)
-            {
-                game.Phase = GamePhase.Abandoned; // Temporary — player may reconnect
+                game.Phase = GamePhase.Abandoned; // Temporary — player may reconnect within grace period
             }
         }
         finally { game.Lock.Release(); }
@@ -749,7 +875,7 @@ public class GameService : IGameService
         {
             if (opp?.IsConnected == true)
                 await _hub.Clients.Client(opp.ConnectionId).SendAsync("GameFinished",
-                    new { result = "Abandoned", winner = (string?)null, reason = "Opponent disconnected" });
+                    new { result = "Abandoned", winner = (string?)null, reason = "Lobby owner left the game" });
             return;
         }
 
@@ -769,7 +895,7 @@ public class GameService : IGameService
                 try
                 {
                     await Task.Delay(TimeSpan.FromSeconds(_cfg.DisconnectionGraceSeconds), cts.Token);
-                    await ForceEndGameAsync(gameId, disconnectedPlayer!.Color, opp?.Color, "Opponent abandoned the game");
+                    await ForceEndGameAsync(gameId, disconnectedPlayer!.Color, opp?.Color, "Opponent abandoned the game (disconnection timeout)");
                 }
                 catch (OperationCanceledException) { /* Player reconnected in time */ }
                 catch (Exception ex) { _log.LogError(ex, "Disconnection timer error for game {Id}", gameId); }
@@ -780,7 +906,12 @@ public class GameService : IGameService
 
     public async Task HandleReconnectionAsync(string gameId, string playerId, string newConnectionId)
     {
-        if (!_games.TryGetValue(gameId, out var game)) return;
+        if (!_games.TryGetValue(gameId, out var game))
+        {
+            await _hub.Clients.Client(newConnectionId).SendAsync("Error",
+                new { message = "Game not found or has expired. Redirecting to home..." });
+            return;
+        }
 
         PlayerInfo? reconnected = null;
         PlayerInfo? opp         = null;
@@ -791,7 +922,13 @@ public class GameService : IGameService
         {
             if (game.PlayerWhite?.PlayerId == playerId)      reconnected = game.PlayerWhite;
             else if (game.PlayerBlack?.PlayerId == playerId) reconnected = game.PlayerBlack;
-            if (reconnected is null) return;
+            
+            if (reconnected is null)
+            {
+                _ = _hub.Clients.Client(newConnectionId).SendAsync("Error",
+                    new { message = "You are not a participant in this game." });
+                return;
+            }
 
             // Update connection mapping
             _connectionToGame.TryRemove(reconnected.ConnectionId, out _);
@@ -805,7 +942,9 @@ public class GameService : IGameService
 
             // Restore playing phase if we had set it to Abandoned
             if (game.Phase == GamePhase.Abandoned)
-                game.Phase = GamePhase.Playing;
+            {
+                game.Phase = game.Board.Count > 0 ? GamePhase.Playing : GamePhase.Setup;
+            }
 
             opp = Opponent(game, reconnected.Color);
 
@@ -864,7 +1003,8 @@ public class GameService : IGameService
                     {
                         phase  = "Finished",
                         result = game.Result.ToString(),
-                        winner = game.Winner?.ToString()
+                        winner = game.Winner?.ToString(),
+                        reason = "Disconnection timeout — game ended."
                     };
                     break;
             }
@@ -1074,4 +1214,187 @@ public class GameService : IGameService
         => string.IsNullOrWhiteSpace(name) ? "Anonymous"
            : name.Trim().Length > 24 ? name.Trim()[..24]
            : name.Trim();
+
+    // ════════════════════════════════════════════════════════════════════════
+    //  Bot AI Implementation
+    // ════════════════════════════════════════════════════════════════════════
+
+    private Dictionary<(int row, int col), ChessPieceInfo> CreateRandomBotSetup(PieceColor color)
+    {
+        var board = new Dictionary<(int, int), ChessPieceInfo>();
+        int minRow = color == PieceColor.White ? 0 : 4;
+        int maxRow = color == PieceColor.White ? 3 : 7;
+
+        var pieceTypes = new List<PieceType>
+        {
+            PieceType.King, PieceType.Queen, PieceType.Rook, PieceType.Rook,
+            PieceType.Bishop, PieceType.Bishop, PieceType.Knight, PieceType.Knight,
+            PieceType.Pawn, PieceType.Pawn, PieceType.Pawn, PieceType.Pawn,
+            PieceType.Pawn, PieceType.Pawn, PieceType.Pawn, PieceType.Pawn
+        };
+
+        var availableSpots = new List<(int r, int c)>();
+        for (int r = minRow; r <= maxRow; r++)
+        {
+            for (int c = 0; c < 8; c++)
+            {
+                availableSpots.Add((r, c));
+            }
+        }
+
+        var rand = Random.Shared;
+        var spots = availableSpots.OrderBy(_ => rand.Next()).ToList();
+
+        for (int i = 0; i < pieceTypes.Count; i++)
+        {
+            var (r, c) = spots[i];
+            board[(r, c)] = new ChessPieceInfo
+            {
+                Type = pieceTypes[i],
+                Color = color,
+                Row = r,
+                Col = c
+            };
+        }
+
+        return board;
+    }
+
+    private async Task TriggerBotMoveAsync(string gameId, string difficulty)
+    {
+        try
+        {
+            await Task.Delay(Random.Shared.Next(600, 1100));
+
+            if (!_games.TryGetValue(gameId, out var game)) return;
+            if (game.Phase != GamePhase.Playing) return;
+            if (game.CurrentTurn != PieceColor.Black || game.PlayerBlack?.IsBot != true) return;
+
+            var (fromAlg, toAlg, promoStr) = SelectBotMove(game, difficulty);
+            if (string.IsNullOrEmpty(fromAlg) || string.IsNullOrEmpty(toAlg)) return;
+
+            await MakeMoveAsync(gameId, "BOT_CONNECTION_ID", fromAlg, toAlg, promoStr);
+        }
+        catch (Exception ex)
+        {
+            _log.LogError(ex, "Bot move error in game {Id}", gameId);
+        }
+    }
+
+    private (string from, string to, string? promotion) SelectBotMove(GameState game, string difficulty)
+    {
+        var legalMoves = new List<(int fr, int fc, int tr, int tc, PieceType? promo, double score)>();
+        (int, int)? ep = game.EnPassantTarget != null ? _chess.FromAlgebraic(game.EnPassantTarget) : null;
+        var botColor = game.CurrentTurn;
+
+        var botPieces = game.Board.Where(kvp => kvp.Value.Color == botColor).ToList();
+
+        foreach (var pieceKvp in botPieces)
+        {
+            (int fr, int fc) = pieceKvp.Key;
+            var piece = pieceKvp.Value;
+            var dests = _chess.GetLegalMoves(game.Board, fr, fc, ep);
+
+            foreach (var (tr, tc) in dests)
+            {
+                PieceType? promo = null;
+                if (piece.Type == PieceType.Pawn && (tr == 0 || tr == 7))
+                    promo = PieceType.Queen;
+
+                double score = 0;
+                // Capture valuation
+                if (game.Board.TryGetValue((tr, tc), out var targetPiece))
+                {
+                    score += GetPieceValue(targetPiece.Type);
+                }
+
+                // Simulate move to evaluate outcome
+                var applied = _chess.ApplyMove(game.Board, fr, fc, tr, tc, promo, ep);
+                if (applied.Success)
+                {
+                    bool causesCheck = _chess.IsInCheck(applied.NewBoard, Opposite(botColor));
+                    (int, int)? nextEp = applied.NewEnPassantTarget;
+                    bool causesMate = causesCheck && _chess.IsCheckmate(applied.NewBoard, Opposite(botColor), nextEp);
+
+                    if (causesMate) score += 10000;
+                    else if (causesCheck) score += 50;
+
+                    // Unsafe square penalty
+                    if (_chess.IsSquareAttacked(applied.NewBoard, tr, tc, Opposite(botColor)))
+                    {
+                        score -= GetPieceValue(piece.Type) * 0.7;
+                    }
+
+                    // Center preference
+                    double centerDist = Math.Abs(3.5 - tr) + Math.Abs(3.5 - tc);
+                    score += (7 - centerDist) * 3;
+                }
+
+                legalMoves.Add((fr, fc, tr, tc, promo, score));
+            }
+        }
+
+        if (legalMoves.Count == 0) return (string.Empty, string.Empty, null);
+
+        var rand = Random.Shared;
+        (int fr, int fc, int tr, int tc, PieceType? promo, double score) selected;
+
+        if (difficulty == "Easy")
+        {
+            if (rand.NextDouble() < 0.7)
+                selected = legalMoves[rand.Next(legalMoves.Count)];
+            else
+                selected = legalMoves.OrderByDescending(m => m.score).First();
+        }
+        else if (difficulty == "Hard")
+        {
+            for (int i = 0; i < legalMoves.Count; i++)
+            {
+                var m = legalMoves[i];
+                var applied = _chess.ApplyMove(game.Board, m.fr, m.fc, m.tr, m.tc, m.promo, ep);
+                if (applied.Success)
+                {
+                    double oppBestResponse = 0;
+                    var oppPieces = applied.NewBoard.Where(k => k.Value.Color == Opposite(botColor));
+                    foreach (var oppKvp in oppPieces)
+                    {
+                        var oppDests = _chess.GetLegalMoves(applied.NewBoard, oppKvp.Key.row, oppKvp.Key.col, applied.NewEnPassantTarget);
+                        foreach (var dest in oppDests)
+                        {
+                            if (applied.NewBoard.TryGetValue(dest, out var attackedPiece))
+                            {
+                                double val = GetPieceValue(attackedPiece.Type);
+                                if (val > oppBestResponse) oppBestResponse = val;
+                            }
+                        }
+                    }
+                    legalMoves[i] = (m.fr, m.fc, m.tr, m.tc, m.promo, m.score - oppBestResponse * 0.8);
+                }
+            }
+            var topMoves = legalMoves.OrderByDescending(m => m.score).Take(3).ToList();
+            selected = topMoves[rand.Next(topMoves.Count)];
+        }
+        else // Medium
+        {
+            var noisy = legalMoves.Select(m => (m, finalScore: m.score + (rand.NextDouble() * 40 - 20))).OrderByDescending(x => x.finalScore).ToList();
+            selected = noisy.First().m;
+        }
+
+        string fromAlg = _chess.ToAlgebraic(selected.fr, selected.fc);
+        string toAlg = _chess.ToAlgebraic(selected.tr, selected.tc);
+        string? promoStr = selected.promo?.ToString();
+
+        return (fromAlg, toAlg, promoStr);
+    }
+
+    private static double GetPieceValue(PieceType type) => type switch
+    {
+        PieceType.Pawn => 100,
+        PieceType.Knight => 320,
+        PieceType.Bishop => 330,
+        PieceType.Rook => 500,
+        PieceType.Queen => 900,
+        PieceType.King => 20000,
+        _ => 0
+    };
 }

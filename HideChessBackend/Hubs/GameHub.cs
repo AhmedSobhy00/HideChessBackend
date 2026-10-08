@@ -27,13 +27,16 @@ public class GameHub : Hub
     {
         try
         {
-            var g = await _game.CreateGameAsync(Context.ConnectionId, request.PlayerName, request.GameMode);
+            var g = await _game.CreateGameAsync(
+                Context.ConnectionId, request.PlayerName, request.GameMode, request.PreferredColor);
+
+            var creator = g.PlayerWhite?.ConnectionId == Context.ConnectionId ? g.PlayerWhite : g.PlayerBlack;
             await Clients.Caller.SendAsync("GameCreated", new
             {
                 gameId    = g.GameId,
-                playerId  = g.PlayerWhite!.PlayerId,
-                yourColor = "White",
-                yourName  = g.PlayerWhite.Name,
+                playerId  = creator!.PlayerId,
+                yourColor = creator.Color.ToString(),
+                yourName  = creator.Name,
                 gameMode  = g.GameMode,
                 shareUrl  = $"/game/{g.GameId}"
             });
@@ -42,6 +45,41 @@ public class GameHub : Hub
         {
             _log.LogError(ex, "CreateGame failed");
             await Error("Failed to create game");
+        }
+    }
+
+    public async Task CreateBotGame(CreateBotGameRequest request)
+    {
+        try
+        {
+            var g = await _game.CreateBotGameAsync(
+                Context.ConnectionId, request.PlayerName, request.GameMode, request.Difficulty, request.PreferredColor);
+
+            var human = g.PlayerWhite?.ConnectionId == Context.ConnectionId ? g.PlayerWhite : g.PlayerBlack;
+            await Clients.Caller.SendAsync("GameCreated", new
+            {
+                gameId    = g.GameId,
+                playerId  = human!.PlayerId,
+                yourColor = human.Color.ToString(),
+                yourName  = human.Name,
+                gameMode  = g.GameMode,
+                isBotGame = true,
+                shareUrl  = $"/game/{g.GameId}"
+            });
+
+            if (g.GameMode == "Classic")
+            {
+                await _game.StartRevealPhaseAsync(g.GameId);
+            }
+            else
+            {
+                await _game.StartSetupPhaseAsync(g.GameId);
+            }
+        }
+        catch (Exception ex)
+        {
+            _log.LogError(ex, "CreateBotGame failed");
+            await Error("Failed to create bot game");
         }
     }
 
@@ -55,22 +93,25 @@ public class GameHub : Hub
 
             if (err != null) { await Error(err); return; }
 
+            var joiner = g!.PlayerWhite?.ConnectionId == Context.ConnectionId ? g.PlayerWhite : g.PlayerBlack;
+            var host   = g.PlayerWhite?.ConnectionId == Context.ConnectionId ? g.PlayerBlack : g.PlayerWhite;
+
             // Tell the joining player their details
             await Clients.Caller.SendAsync("GameJoined", new
             {
-                gameId       = g!.GameId,
-                playerId     = g.PlayerBlack!.PlayerId,
-                yourColor    = "Black",
-                yourName     = g.PlayerBlack.Name,
-                opponentName = g.PlayerWhite!.Name,
+                gameId       = g.GameId,
+                playerId     = joiner!.PlayerId,
+                yourColor    = joiner.Color.ToString(),
+                yourName     = joiner.Name,
+                opponentName = host!.Name,
                 gameMode     = g.GameMode
             });
 
-            // Tell the waiting (white) player someone joined
-            await Clients.Client(g.PlayerWhite.ConnectionId).SendAsync("PlayerJoined", new
+            // Tell the waiting player someone joined
+            await Clients.Client(host.ConnectionId).SendAsync("PlayerJoined", new
             {
-                opponentName = g.PlayerBlack.Name,
-                color        = "Black",
+                opponentName = joiner.Name,
+                color        = joiner.Color.ToString(),
                 gameMode     = g.GameMode
             });
         }

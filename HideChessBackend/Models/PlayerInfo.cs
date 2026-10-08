@@ -10,4 +10,6 @@ public class PlayerInfo
     public PieceColor Color   { get; set; }
     public bool IsReady       { get; set; }
     public bool IsConnected   { get; set; } = true;
+    public bool IsBot         { get; set; }
+    public string BotDifficulty { get; set; } = "Medium";
 }
