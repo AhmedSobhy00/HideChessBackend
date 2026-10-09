@@ -287,12 +287,7 @@ public class BattleshipService : IBattleshipService
             game.WinnerPlayerId = shooter.PlayerId;
             game.WinnerName = shooter.Name;
 
-            await BroadcastToGame(game.GameId, "BattleshipFinished", new
-            {
-                winnerPlayerId = shooter.PlayerId,
-                winnerName = shooter.Name,
-                reason = "All ships destroyed"
-            });
+            await BroadcastFinishedState(game, shooter, "All ships destroyed");
             return (true, null);
         }
 
@@ -435,14 +430,37 @@ public class BattleshipService : IBattleshipService
         game.WinnerPlayerId = winner.PlayerId;
         game.WinnerName = winner.Name;
 
-        await BroadcastToGame(game.GameId, "BattleshipFinished", new
-        {
-            winnerPlayerId = winner.PlayerId,
-            winnerName = winner.Name,
-            reason = $"{resigner.Name} resigned"
-        });
+        await BroadcastFinishedState(game, winner, $"{resigner.Name} resigned");
 
         return (true, null);
+    }
+
+    private async Task BroadcastFinishedState(BattleshipGameState game, BattleshipPlayer winner, string reason)
+    {
+        var hostEnemyShips = game.Guest?.Ships ?? new List<ShipInstance>();
+        var guestEnemyShips = game.Host.Ships;
+
+        if (!string.IsNullOrEmpty(game.Host.ConnectionId) && !game.Host.IsBot)
+        {
+            await _hubContext.Clients.Client(game.Host.ConnectionId).SendAsync("BattleshipFinished", new
+            {
+                winnerPlayerId = winner.PlayerId,
+                winnerName = winner.Name,
+                reason = reason,
+                enemyShips = hostEnemyShips
+            });
+        }
+
+        if (game.Guest != null && !string.IsNullOrEmpty(game.Guest.ConnectionId) && !game.Guest.IsBot)
+        {
+            await _hubContext.Clients.Client(game.Guest.ConnectionId).SendAsync("BattleshipFinished", new
+            {
+                winnerPlayerId = winner.PlayerId,
+                winnerName = winner.Name,
+                reason = reason,
+                enemyShips = guestEnemyShips
+            });
+        }
     }
 
     private async Task CheckBothReadyAndStartAsync(BattleshipGameState game)
